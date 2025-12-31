@@ -1,6 +1,6 @@
 {
   "graphs": {
-    "rh_4_agentes": "agent_rh_4_agentes:app"
+    "agent_Basic": "agent_Basic:app"
   },
   "python_version": "3.13",
   "env": "./.env",
