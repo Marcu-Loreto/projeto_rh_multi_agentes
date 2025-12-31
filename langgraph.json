@@ -1,0 +1,10 @@
+{
+  "graphs": {
+    "customer_service_agent": "agent:app"
+  },
+  "python_version": "3.13",
+  "env": "./.env",
+  "dependencies": [
+    "."
+  ]
+}
