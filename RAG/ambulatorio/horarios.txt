@@ -1,0 +1,21 @@
+HORÁRIO DE ATENDIMENTO DO AMBULATÓRIO
+
+HORÁRIOS:
+- Segunda a Sexta: 7h às 19h
+- Sábado: 8h às 12h
+- Domingo e Feriados: Fechado
+
+SERVIÇOS DISPONÍVEIS:
+- Consultas médicas (clínico geral)
+- Atendimento de enfermagem
+- Primeiros socorros
+- Aferição de pressão arterial e glicemia
+- Aplicação de medicamentos (com receita médica)
+- Curativos simples
+
+LOCALIZAÇÃO:
+Prédio A, 1º andar
+
+CONTATO:
+Email: ambulatorio@empresa.com
+Ramal: 5001

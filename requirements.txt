@@ -3,3 +3,7 @@ langgraph
 langchain-openai
 pydantic
 langgraph-cli[inmem]
+chromadb
+langchain-chroma
+langchain-community
+streamlit

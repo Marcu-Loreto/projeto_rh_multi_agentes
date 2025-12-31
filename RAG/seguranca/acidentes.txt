@@ -1,0 +1,18 @@
+PROCEDIMENTO EM CASO DE ACIDENTE
+
+PASSOS IMEDIATOS:
+1. Interrompa imediatamente a atividade
+2. Acione o SESMT: ramal 4001 ou botão de emergência
+3. Preste primeiros socorros se capacitado
+4. Não mova a vítima em caso de lesão grave
+5. Preserve o local do acidente
+6. Preencha o relatório de acidente em até 24h
+7. Procure o ambulatório para avaliação médica
+
+EMERGÊNCIAS:
+- SAMU: 192
+- Bombeiros: 193
+- Ambulatório interno: ramal 5001
+
+IMPORTANTE:
+Todo acidente deve ser comunicado imediatamente ao SESMT, mesmo que não haja lesão aparente.

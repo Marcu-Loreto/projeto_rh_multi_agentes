@@ -1,0 +1,17 @@
+EQUIPAMENTOS DE PROTEÇÃO INDIVIDUAL (EPIs)
+
+TIPOS DE EPIs:
+- Capacete: Obrigatório em áreas de produção
+- Óculos de proteção: Para trabalhos com produtos químicos
+- Luvas: Específicas para cada atividade
+- Protetor auricular: Em áreas com ruído acima de 85dB
+- Calçado de segurança: Botina com biqueira de aço
+
+SOLICITAÇÃO:
+- Como solicitar: Através do supervisor imediato
+- Troca: Quando danificado ou a cada 6 meses
+- Obrigatoriedade: Uso obrigatório conforme NR-6
+
+CONTATO SESMT:
+Email: seguranca@empresa.com
+Ramal: 4001

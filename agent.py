@@ -14,7 +14,7 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, max_tokens=300)
 # 2. Define the State for the graph
 # We add 'next_node' to hold the decision from our new initial router.
 
-
+# State trackin dos Nodes
 class State(TypedDict):
     messages: Annotated[list, add_messages]
     message_type: str | None
@@ -30,7 +30,7 @@ class InitialRouter(BaseModel):
         description="Choose 'classifier' if the user presents a clear technical or financial question. Otherwise, choose 'receptionist'.",
     )
 
-
+#Identifica a intenção do usuário
 class MessageClassifier(BaseModel):
     """Classify the user's query into technical or financial."""
 
