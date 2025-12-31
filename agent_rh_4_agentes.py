@@ -19,9 +19,64 @@ from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 import os
 from pathlib import Path
+from datetime import datetime
+import pytz
 
 # Load environment variables
 load_dotenv()
+
+# ============================================================================
+# TIMEZONE E CUMPRIMENTOS CONTEXTUALIZADOS
+# ============================================================================
+
+def get_sao_paulo_time():
+    """
+    Retorna o horário atual no timezone de São Paulo (America/Sao_Paulo).
+    
+    Returns:
+        datetime: Objeto datetime com timezone de São Paulo
+    """
+    sao_paulo_tz = pytz.timezone('America/Sao_Paulo')
+    return datetime.now(sao_paulo_tz)
+
+
+def get_contextual_greeting():
+    """
+    Retorna um cumprimento contextualizado baseado no horário de São Paulo.
+    
+    Returns:
+        str: "Bom dia", "Boa tarde" ou "Boa noite"
+    """
+    current_time = get_sao_paulo_time()
+    hour = current_time.hour
+    
+    if 5 <= hour < 12:
+        return "Bom dia"
+    elif 12 <= hour < 18:
+        return "Boa tarde"
+    else:
+        return "Boa noite"
+
+
+def get_formatted_time():
+    """
+    Retorna o horário atual de São Paulo formatado.
+    
+    Returns:
+        str: Horário formatado (ex: "14:30 - Terça-feira, 31/12/2025")
+    """
+    current_time = get_sao_paulo_time()
+    weekdays = {
+        0: "Segunda-feira",
+        1: "Terça-feira",
+        2: "Quarta-feira",
+        3: "Quinta-feira",
+        4: "Sexta-feira",
+        5: "Sábado",
+        6: "Domingo"
+    }
+    weekday = weekdays[current_time.weekday()]
+    return current_time.strftime(f"%H:%M - {weekday}, %d/%m/%Y")
 
 # ============================================================================
 # PASSO 1: FUNÇÃO PARA CARREGAR DOCUMENTOS DE ARQUIVOS .TXT
@@ -156,6 +211,8 @@ class State(TypedDict):
     message_type: str | None
     next_node: str | None
     retrieved_context: str | None
+    current_time: str | None
+    greeting: str | None
 
 # ============================================================================
 # PASSO 3: CONFIGURAR LLM
@@ -204,23 +261,44 @@ def route_initial_message(state: State):
         },
         {"role": "user", "content": last_message.content},
     ])
-    return {"next_node": result.next_node}
+    
+    # Adicionar informações de timezone e cumprimento ao state
+    greeting = get_contextual_greeting()
+    current_time = get_formatted_time()
+    
+    return {
+        "next_node": result.next_node,
+        "greeting": greeting,
+        "current_time": current_time
+    }
 
 
 def receptionist_agent(state: State):
     """Recepcionista do RH."""
     last_message = state["messages"][-1]
+    greeting = state.get("greeting", "Olá")
+    current_time = state.get("current_time", "")
+    
     messages = [
         {
             "role": "system",
-            "content": """Você é a recepcionista virtual do RH da empresa. 
-            Seja cordial e profissional. Pergunte como pode ajudar com questões de:
-            - Benefícios (plano de saúde, vale refeição, vale transporte)
-            - Segurança do Trabalho (EPIs, acidentes, treinamentos)
-            - Ambulatório (consultas, atestados, exames)
-            - Folha de Pagamento (salário, férias, 13º)
+            "content": f"""Você é a recepcionista virtual do RH da CPQD. 
             
-            Mantenha a resposta breve e educada.""",
+            INFORMAÇÕES CONTEXTUAIS:
+            - Horário atual: {current_time} (horário de Brasília)
+            - Cumprimento apropriado: {greeting}
+            
+            INSTRUÇÕES:
+            - SEMPRE comece sua resposta com o cumprimento contextualizado ({greeting})
+            - Seja cordial, profissional e acolhedora
+            - Mencione o horário quando relevante
+            - Ofereça ajuda com questões de:
+              • Benefícios (plano de saúde, vale refeição, vale transporte)
+              • Segurança do Trabalho (EPIs, acidentes, treinamentos)
+              • Ambulatório (consultas, atestados, exames)
+              • Folha de Pagamento (salário, férias, 13º)
+            
+            Mantenha a resposta breve, educada e humanizada.""",
         },
         {"role": "user", "content": last_message.content},
     ]
@@ -285,6 +363,8 @@ def benefits_agent(state: State):
     
     system_prompt = f"""Você é o especialista em BENEFÍCIOS do RH.
 
+⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
+
 📚 BASE DE CONHECIMENTO:
 {context}
 
@@ -293,6 +373,7 @@ def benefits_agent(state: State):
 - Seja específico com valores, prazos e procedimentos
 - Se a base tiver informações relevantes, cite-as
 - Sempre inclua contatos e ramais quando disponíveis
+- Considere o horário atual ao mencionar prazos
 - Responda em Português (BR)
 - Seja profissional e prestativo
 
@@ -314,6 +395,8 @@ def safety_agent(state: State):
     
     system_prompt = f"""Você é o especialista em SEGURANÇA DO TRABALHO do RH.
 
+⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
+
 📚 BASE DE CONHECIMENTO:
 {context}
 
@@ -323,6 +406,7 @@ def safety_agent(state: State):
 - Seja claro sobre procedimentos de emergência
 - Cite normas regulamentadoras (NRs) quando relevante
 - Sempre inclua contatos do SESMT
+- Considere o horário atual ao mencionar prazos
 - Responda em Português (BR)
 - Seja firme mas empático
 
@@ -344,6 +428,8 @@ def clinic_agent(state: State):
     
     system_prompt = f"""Você é o especialista em AMBULATÓRIO E SAÚDE OCUPACIONAL do RH.
 
+⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
+
 📚 BASE DE CONHECIMENTO:
 {context}
 
@@ -353,6 +439,7 @@ def clinic_agent(state: State):
 - Explique prazos para entrega de atestados
 - Oriente sobre exames ocupacionais
 - Sempre inclua contatos do ambulatório
+- Considere o horário atual ao mencionar prazos e horários de atendimento
 - Responda em Português (BR)
 - Seja empático e acolhedor
 
@@ -374,6 +461,8 @@ def payroll_agent(state: State):
     
     system_prompt = f"""Você é o especialista em FOLHA DE PAGAMENTO do RH.
 
+⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
+
 📚 BASE DE CONHECIMENTO:
 {context}
 
@@ -383,6 +472,7 @@ def payroll_agent(state: State):
 - Explique descontos e proventos claramente
 - Oriente sobre procedimentos no Portal RH
 - Cite legislação trabalhista quando relevante
+- Considere o horário atual ao mencionar prazos de pagamento
 - Responda em Português (BR)
 - Seja claro e objetivo
 

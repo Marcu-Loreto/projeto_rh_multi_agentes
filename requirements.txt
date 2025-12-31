@@ -7,3 +7,4 @@ chromadb
 langchain-chroma
 langchain-community
 streamlit
+pytz

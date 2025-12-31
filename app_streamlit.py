@@ -6,7 +6,7 @@ Interface web moderna para interagir com os 4 agentes especializados de RH.
 """
 
 import streamlit as st
-from agent_rh_4_agentes import app
+from agent_rh_4_agentes import app, get_sao_paulo_time, get_contextual_greeting, get_formatted_time
 import time
 
 # ============================================================================
@@ -161,6 +161,14 @@ with st.sidebar:
     <div class="agent-badge badge-clinic">🏥 Ambulatório</div>
     <div class="agent-badge badge-payroll">💰 Folha de Pagamento</div>
     """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Exibir horário e cumprimento
+    st.markdown("⏰ **Horário Atual**")
+    current_time_display = get_formatted_time()
+    greeting_display = get_contextual_greeting()
+    st.info(f"{greeting_display}!\n\n{current_time_display}")
     
     st.markdown("---")
     
