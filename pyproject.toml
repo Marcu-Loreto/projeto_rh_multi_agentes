@@ -5,11 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "langgraph",
-    "langchain-openai",
-    "pydantic",
-    "langgraph-cli[inmem]",
     "chromadb",
+    "langchain",
     "langchain-chroma",
     "langchain-community",
+    "langchain-openai",
+    "langfuse",
+    "langgraph",
+    "langgraph-cli[inmem]",
+    "pydantic",
+    "python-dotenv",
+    "pytz",
+    "streamlit",
 ]

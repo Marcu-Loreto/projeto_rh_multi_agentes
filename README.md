@@ -1,5 +1,7 @@
 # 🤖 Sistema de Atendimento RH com Multi-Agentes e RAG
 
+#Rodar completo = bash run_completo.sh
+
 [![Python Version](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2.0%2B-green.svg)](https://langchain-ai.github.io/langgraph/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-orange.svg)](https://openai.com/)
@@ -37,12 +39,14 @@ O sistema utiliza **RAG (Retrieval-Augmented Generation)** para buscar informaç
 ## ✨ Características
 
 ### 🧠 Inteligência Artificial Avançada
+
 - **Roteamento Inteligente**: Classificação automática de consultas para o agente apropriado
 - **RAG com ChromaDB**: Busca semântica em documentos para respostas contextualizadas
 - **Embeddings OpenAI**: Vetorização de documentos com `text-embedding-3-small`
 - **GPT-4o-mini**: Processamento de linguagem natural otimizado
 
 ### 🎨 Interface Moderna
+
 - **Streamlit UI**: Interface web responsiva e intuitiva
 - **Design Gradiente**: Visual moderno com glassmorphism
 - **Badges de Agentes**: Identificação visual do agente respondente
@@ -50,6 +54,7 @@ O sistema utiliza **RAG (Retrieval-Augmented Generation)** para buscar informaç
 - **Estatísticas em Tempo Real**: Métricas de uso e histórico
 
 ### 🔧 Arquitetura Robusta
+
 - **LangGraph**: Workflow baseado em grafos com estado persistente
 - **Multi-Agente**: 4 agentes especializados + recepcionista + classificador
 - **Modularidade**: Código organizado e fácil de manter
@@ -86,16 +91,16 @@ graph TD
 
 ## 🛠️ Tecnologias
 
-| Tecnologia | Versão | Uso |
-|------------|--------|-----|
-| **Python** | 3.11+ | Linguagem principal |
-| **LangGraph** | 0.2.0+ | Orquestração de agentes |
-| **LangChain** | Latest | Framework de LLM |
-| **OpenAI** | Latest | GPT-4o-mini + Embeddings |
-| **ChromaDB** | Latest | Vector store para RAG |
-| **Streamlit** | 1.0+ | Interface web |
-| **Pydantic** | 2.8+ | Validação de dados |
-| **python-dotenv** | 1.0+ | Gerenciamento de variáveis |
+| Tecnologia        | Versão | Uso                        |
+| ----------------- | ------ | -------------------------- |
+| **Python**        | 3.11+  | Linguagem principal        |
+| **LangGraph**     | 0.2.0+ | Orquestração de agentes    |
+| **LangChain**     | Latest | Framework de LLM           |
+| **OpenAI**        | Latest | GPT-4o-mini + Embeddings   |
+| **ChromaDB**      | Latest | Vector store para RAG      |
+| **Streamlit**     | 1.0+   | Interface web              |
+| **Pydantic**      | 2.8+   | Validação de dados         |
+| **python-dotenv** | 1.0+   | Gerenciamento de variáveis |
 
 ## 📦 Pré-requisitos
 
@@ -234,38 +239,47 @@ Agente_Suporte_RH_Langgraphic/
 ## 🤖 Agentes Especializados
 
 ### 1. 💼 Agente de Benefícios
+
 **Especialidade**: Plano de saúde, vale refeição, vale alimentação, vale transporte
 
 **Exemplo de perguntas:**
+
 - "Como faço para incluir meu filho no plano de saúde?"
 - "Qual o valor do vale refeição?"
 - "Como solicitar o vale transporte?"
 
 ### 2. 🦺 Agente de Segurança do Trabalho
+
 **Especialidade**: EPIs, acidentes de trabalho, treinamentos de segurança, SESMT
 
 **Exemplo de perguntas:**
+
 - "Sofri um acidente no trabalho, o que devo fazer?"
 - "Como solicitar novos EPIs?"
 - "Quando é o próximo treinamento de segurança?"
 
 ### 3. 🏥 Agente de Ambulatório
+
 **Especialidade**: Consultas, atestados médicos, exames periódicos, saúde ocupacional
 
 **Exemplo de perguntas:**
+
 - "Preciso entregar um atestado médico, qual o prazo?"
 - "Como agendar uma consulta no ambulatório?"
 - "Quando devo fazer o exame periódico?"
 
 ### 4. 💰 Agente de Folha de Pagamento
+
 **Especialidade**: Salário, holerite, férias, 13º salário, rescisão
 
 **Exemplo de perguntas:**
+
 - "Quando recebo a primeira parcela do 13º salário?"
 - "Como solicitar adiantamento salarial?"
 - "Onde consulto meu holerite?"
 
 ### 5. 👋 Recepcionista Virtual
+
 **Função**: Atende saudações e oferece orientação geral sobre os serviços disponíveis
 
 ## 📚 Base de Conhecimento
@@ -300,6 +314,7 @@ Contatos:
 ### Metadados dos Documentos
 
 Cada documento é indexado com:
+
 - **source**: Nome do arquivo
 - **category**: Categoria (benefits, safety, clinic, payroll)
 - **file_path**: Caminho completo
@@ -344,7 +359,7 @@ Edite `agent_rh_4_agentes.py` e modifique os prompts dos agentes:
 ```python
 def benefits_agent(state: State):
     system_prompt = f"""Você é o especialista em BENEFÍCIOS do RH.
-    
+
     [Personalize aqui]
     """
 ```
@@ -354,6 +369,7 @@ def benefits_agent(state: State):
 ### Problema: "Nenhum documento foi carregado"
 
 **Solução:**
+
 ```bash
 # Verifique se os arquivos .txt existem
 dir RAG\beneficios\*.txt
@@ -365,6 +381,7 @@ dir RAG\folha_pagamento\*.txt
 ### Problema: "OpenAI API Key not found"
 
 **Solução:**
+
 ```bash
 # Verifique se o arquivo .env existe e contém a chave
 type .env
@@ -373,6 +390,7 @@ type .env
 ### Problema: Streamlit não inicia
 
 **Solução:**
+
 ```bash
 # Reinstale o Streamlit
 pip uninstall streamlit
@@ -385,6 +403,7 @@ streamlit run app_streamlit.py
 ### Problema: Erro de importação do ChromaDB
 
 **Solução:**
+
 ```bash
 # Reinstale as dependências do ChromaDB
 pip install --upgrade chromadb langchain-chroma
@@ -456,6 +475,7 @@ Este projeto foi desenvolvido para uso interno do **CPQD**.
 ## 📞 Suporte
 
 Para questões e suporte:
+
 - 📧 Email: suporte.rh@cpqd.com.br
 - 📱 Ramal: 1234
 - 🌐 Portal RH: https://rh.cpqd.com.br

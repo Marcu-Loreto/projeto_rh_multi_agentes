@@ -2,11 +2,17 @@
 🤖 Interface Streamlit - Sistema de Atendimento RH
 ===================================================
 
-Interface web moderna para interagir com os 4 agentes especializados de RH.
+Interface web moderna para interagir com os 5 agentes especializados de RH.
 """
 
 import streamlit as st
-from agent_rh_4_agentes import app, get_sao_paulo_time, get_contextual_greeting, get_formatted_time
+from agent_rh_4_agentes import (
+    app,
+    get_sao_paulo_time,
+    get_contextual_greeting,
+    get_formatted_time,
+    get_run_config,
+)
 import time
 
 # ============================================================================
@@ -99,6 +105,11 @@ st.markdown("""
         background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
         color: white;
     }
+
+    .badge-vacation {
+        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        color: white;
+    }
     
     /* Sidebar */
     .css-1d391kg {
@@ -160,6 +171,7 @@ with st.sidebar:
     <div class="agent-badge badge-safety">🦺 Segurança</div>
     <div class="agent-badge badge-clinic">🏥 Ambulatório</div>
     <div class="agent-badge badge-payroll">💰 Folha de Pagamento</div>
+    <div class="agent-badge badge-vacation">🏖️ Férias</div>
     """, unsafe_allow_html=True)
     
     st.markdown("---")
@@ -196,6 +208,7 @@ with st.sidebar:
                 "safety": "🦺", 
                 "clinic": "🏥",
                 "payroll": "💰",
+                "vacation": "🏖️",
                 "receptionist": "👋"
             }.get(agent, "🤖")
             st.markdown(f"{emoji} **{agent.title()}**: {count}x")
@@ -243,10 +256,11 @@ if prompt := st.chat_input("Digite sua pergunta sobre RH..."):
         # Mostrar indicador de carregamento
         with st.spinner("🤔 Processando sua pergunta..."):
             try:
-                # Invocar o grafo LangGraph
-                result = app.invoke({
-                    "messages": [{"role": "user", "content": prompt}]
-                })
+                # Invocar o grafo LangGraph (com telemetria Langfuse se configurada)
+                result = app.invoke(
+                    {"messages": [{"role": "user", "content": prompt}]},
+                    config=get_run_config(),
+                )
                 
                 # Extrair resposta
                 assistant_message = result['messages'][-1].content
@@ -261,6 +275,7 @@ if prompt := st.chat_input("Digite sua pergunta sobre RH..."):
                     "safety": '<span class="agent-badge badge-safety">🦺 Segurança</span>',
                     "clinic": '<span class="agent-badge badge-clinic">🏥 Ambulatório</span>',
                     "payroll": '<span class="agent-badge badge-payroll">💰 Folha de Pagamento</span>',
+                    "vacation": '<span class="agent-badge badge-vacation">🏖️ Férias</span>',
                 }
                 
                 badge = agent_badges.get(message_type, "")

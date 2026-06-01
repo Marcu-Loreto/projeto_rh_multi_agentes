@@ -18,6 +18,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 import os
+import csv
 from pathlib import Path
 from datetime import datetime
 import pytz
@@ -78,6 +79,97 @@ def get_formatted_time():
     weekday = weekdays[current_time.weekday()]
     return current_time.strftime(f"%H:%M - {weekday}, %d/%m/%Y")
 
+
+# ============================================================================
+# CARREGADOR DE PROMPTS EXTERNOS
+# ============================================================================
+#
+# Os system prompts dos agentes ficam em arquivos .md sob o diretório definido
+# em PROMPTS_DIR (.env). Isso desacopla conteúdo de código: editar/versionar
+# prompts sem precisar mexer em Python.
+
+PROMPTS_DIR = Path(os.getenv("PROMPTS_DIR", "./prompts")).resolve()
+
+# Cache simples para evitar I/O repetido em cada chamada do node
+_prompt_cache: dict[str, str] = {}
+
+
+def load_prompt(name: str, **kwargs) -> str:
+    """
+    Carrega o template de prompt 'prompts/{name}.md' e aplica substituições.
+
+    Placeholders no template seguem o formato {variavel}. Use {{ }} no .md
+    para escapar chaves literais.
+
+    Args:
+        name: Nome do prompt (sem extensão), ex.: 'benefits_agent'
+        **kwargs: Variáveis para interpolar no template
+
+    Returns:
+        String pronta para ser usada como system prompt.
+    """
+    if name not in _prompt_cache:
+        prompt_path = PROMPTS_DIR / f"{name}.md"
+        if not prompt_path.exists():
+            raise FileNotFoundError(
+                f"Prompt '{name}' não encontrado em {prompt_path}. "
+                f"Verifique PROMPTS_DIR no .env."
+            )
+        _prompt_cache[name] = prompt_path.read_text(encoding="utf-8")
+
+    template = _prompt_cache[name]
+    return template.format(**kwargs) if kwargs else template
+
+
+print(f"📝 PROMPTS_DIR: {PROMPTS_DIR}")
+
+
+# ============================================================================
+# TELEMETRIA LANGFUSE (opcional)
+# ============================================================================
+#
+# Se LANGFUSE_PUBLIC_KEY e LANGFUSE_SECRET_KEY estiverem definidas, ativa o
+# callback handler que captura traces de TODOS os nodes do grafo, prompts,
+# completions e custos. Sem credenciais, a função retorna None e a app roda
+# sem telemetria — comportamento seguro por padrão.
+
+_langfuse_callback = None
+
+
+def get_langfuse_callback():
+    """Retorna o CallbackHandler do Langfuse se configurado, ou None."""
+    global _langfuse_callback
+    if _langfuse_callback is not None:
+        return _langfuse_callback
+
+    if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
+        print("📊 Langfuse: credenciais ausentes — telemetria desativada")
+        return None
+
+    try:
+        from langfuse.langchain import CallbackHandler
+        _langfuse_callback = CallbackHandler()
+        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+        print(f"📊 Langfuse: telemetria ativa → {host}")
+        return _langfuse_callback
+    except Exception as e:
+        print(f"⚠️  Langfuse: falha ao inicializar ({e}) — telemetria desativada")
+        return None
+
+
+def get_run_config() -> dict:
+    """
+    Retorna o config padrão para passar em `app.invoke(state, config=...)`.
+    Inclui o callback do Langfuse se disponível.
+    """
+    cb = get_langfuse_callback()
+    return {"callbacks": [cb]} if cb else {}
+
+
+# Inicializa o callback no boot (lazy: só a primeira chamada)
+get_langfuse_callback()
+
+
 # ============================================================================
 # PASSO 1: FUNÇÃO PARA CARREGAR DOCUMENTOS DE ARQUIVOS .TXT
 # ============================================================================
@@ -132,6 +224,77 @@ def load_documents_from_directory(directory_path: str, category: str) -> list[Do
     return documents
 
 
+def load_csv_documents(directory_path: str, category: str) -> list[Document]:
+    """
+    Carrega arquivos .csv de um diretório, criando 1 Document por linha.
+
+    Cada linha vira um texto formatado 'coluna: valor | coluna: valor', o que
+    funciona bem para busca vetorial (mantém os campos como contexto semântico).
+
+    Args:
+        directory_path: Caminho do diretório com os arquivos .csv
+        category: Categoria dos documentos (ex: 'vacation')
+
+    Returns:
+        Lista de Document objects, um por linha de cada CSV.
+    """
+    documents: list[Document] = []
+    dir_path = Path(directory_path)
+
+    if not dir_path.exists():
+        print(f"⚠️  Diretório não encontrado: {directory_path}")
+        return documents
+
+    csv_files = list(dir_path.glob("*.csv"))
+
+    if not csv_files:
+        print(f"⚠️  Nenhum arquivo .csv encontrado em: {directory_path}")
+        return documents
+
+    for csv_file in csv_files:
+        try:
+            with open(csv_file, "r", encoding="utf-8", newline="") as f:
+                # Detecta delimitador automaticamente (vírgula, ponto-e-vírgula, tab)
+                sample = f.read(2048)
+                f.seek(0)
+                try:
+                    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+                except csv.Error:
+                    dialect = csv.excel  # fallback: vírgula
+
+                reader = csv.DictReader(f, dialect=dialect)
+                row_count = 0
+                for row in reader:
+                    parts = [
+                        f"{k.strip()}: {v.strip()}"
+                        for k, v in row.items()
+                        if k and v and v.strip()
+                    ]
+                    if not parts:
+                        continue
+                    content = " | ".join(parts)
+
+                    doc = Document(
+                        page_content=content,
+                        metadata={
+                            "source": csv_file.stem,
+                            "category": category,
+                            "file_path": str(csv_file),
+                            "row": row_count + 1,
+                            "version": "1.0",
+                        },
+                    )
+                    documents.append(doc)
+                    row_count += 1
+
+            print(f"  ✓ Carregado: {csv_file.name} ({row_count} linhas)")
+
+        except Exception as e:
+            print(f"  ✗ Erro ao carregar {csv_file.name}: {e}")
+
+    return documents
+
+
 # ============================================================================
 # PASSO 2: CARREGAR BASES DE CONHECIMENTO DOS ARQUIVOS
 # ============================================================================
@@ -167,8 +330,20 @@ payroll_knowledge = load_documents_from_directory(
     category="payroll"
 )
 
+print("\n📁 Férias (CSV):")
+vacation_knowledge = load_csv_documents(
+    f"{RAG_BASE_DIR}/ferias",
+    category="vacation"
+)
+
 # Combinar todos os documentos
-all_documents = benefits_knowledge + safety_knowledge + clinic_knowledge + payroll_knowledge
+all_documents = (
+    benefits_knowledge
+    + safety_knowledge
+    + clinic_knowledge
+    + payroll_knowledge
+    + vacation_knowledge
+)
 
 print(f"\n✅ Total de documentos carregados: {len(all_documents)}")
 
@@ -211,14 +386,96 @@ class State(TypedDict):
     message_type: str | None
     next_node: str | None
     retrieved_context: str | None
+    rewritten_queries: list[str] | None
     current_time: str | None
     greeting: str | None
 
 # ============================================================================
-# PASSO 3: CONFIGURAR LLM
+# PASSO 3: POOL DE LLMS POR COMPLEXIDADE
 # ============================================================================
+#
+# Estratégia de seleção de modelo balanceando custo x qualidade:
+#   - simple   → tarefas determinísticas (roteamento, classificação, saudação)
+#   - medium   → tarefas de reformulação/expansão (query rewriting)
+#   - complex  → respostas finais especializadas (agentes RH)
+#
+# Cada nível tem fallback automático para um modelo OpenAI conhecido caso
+# a chave/endpoint do provedor preferido não esteja configurado.
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, max_tokens=400)
+def _build_llm(level: str) -> ChatOpenAI:
+    """Cria uma instância de LLM para o nível de complexidade indicado."""
+    cfg = {
+        "simple": {
+            "model_env": "LLM_SIMPLE_MODEL",
+            "default_model": "minimax-m2.5",
+            "provider": os.getenv("LLM_SIMPLE_PROVIDER", "minimax").lower(),
+            "temperature": 0.0,
+            "max_tokens": 300,
+            "fallback_model": "gpt-4o-mini",
+        },
+        "medium": {
+            "model_env": "LLM_MEDIUM_MODEL",
+            "default_model": "gpt-5.4-nano",
+            "provider": os.getenv("LLM_MEDIUM_PROVIDER", "openai").lower(),
+            "temperature": 0.3,
+            "max_tokens": 250,
+            "fallback_model": "gpt-4o-mini",
+        },
+        "complex": {
+            "model_env": "LLM_COMPLEX_MODEL",
+            "default_model": "gpt-4o-mini",
+            "provider": os.getenv("LLM_COMPLEX_PROVIDER", "openai").lower(),
+            "temperature": 0.0,
+            "max_tokens": 500,
+            "fallback_model": "gpt-4o-mini",
+        },
+    }[level]
+
+    model_name = os.getenv(cfg["model_env"], cfg["default_model"])
+    provider = cfg["provider"]
+
+    # MiniMax expõe API compatível com OpenAI; basta apontar base_url + api_key próprios.
+    if provider == "minimax":
+        api_key = os.getenv("MINIMAX_API_KEY")
+        base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.chat/v1")
+        if not api_key:
+            print(
+                f"⚠️  MINIMAX_API_KEY não configurada — fallback para "
+                f"OpenAI/{cfg['fallback_model']} no nível '{level}'"
+            )
+            return ChatOpenAI(
+                model=cfg["fallback_model"],
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens"],
+            )
+        return ChatOpenAI(
+            model=model_name,
+            temperature=cfg["temperature"],
+            max_tokens=cfg["max_tokens"],
+            api_key=api_key,
+            base_url=base_url,
+        )
+
+    # Provedor padrão: OpenAI
+    return ChatOpenAI(
+        model=model_name,
+        temperature=cfg["temperature"],
+        max_tokens=cfg["max_tokens"],
+    )
+
+
+# Instâncias do pool (criadas uma única vez no boot)
+llm_simple = _build_llm("simple")
+llm_medium = _build_llm("medium")
+llm_complex = _build_llm("complex")
+
+# Alias mantido para compatibilidade com código legado que ainda referencia `llm`
+llm = llm_complex
+
+print("🤖 Pool de LLMs inicializado:")
+print(f"   • simple  → {llm_simple.model_name}")
+print(f"   • medium  → {llm_medium.model_name}")
+print(f"   • complex → {llm_complex.model_name}\n")
 
 # ============================================================================
 # PASSO 4: PYDANTIC MODELS
@@ -234,14 +491,30 @@ class InitialRouter(BaseModel):
 
 class MessageClassifier(BaseModel):
     """Classify the user's query into HR categories."""
-    message_type: Literal["benefits", "safety", "clinic", "payroll"] = Field(
+    message_type: Literal["benefits", "safety", "clinic", "payroll", "vacation"] = Field(
         ...,
         description="""Classify the message as:
         - 'benefits': plano de saúde, vale refeição, vale transporte, benefícios
         - 'safety': segurança do trabalho, EPIs, acidentes, treinamentos de segurança
         - 'clinic': ambulatório, atestados médicos, exames, saúde ocupacional
-        - 'payroll': salário, férias, 13º, holerite, rescisão, folha de pagamento
+        - 'payroll': salário, 13º, holerite, rescisão, folha de pagamento (NÃO inclua férias aqui)
+        - 'vacation': férias, período aquisitivo/concessivo, abono pecuniário, venda de férias, programação de férias
         """,
+    )
+
+
+class RewrittenQueries(BaseModel):
+    """Reformulações da pergunta do usuário para melhorar a busca semântica."""
+    queries: list[str] = Field(
+        ...,
+        description=(
+            "Lista de 3 reformulações em Português (BR) da pergunta original, "
+            "expandindo termos técnicos, sinônimos e variações que ajudem na busca "
+            "vetorial. Cada item deve ser uma frase declarativa curta, focada em "
+            "palavras-chave do domínio de RH."
+        ),
+        min_length=3,
+        max_length=3,
     )
 
 # ============================================================================
@@ -251,13 +524,11 @@ class MessageClassifier(BaseModel):
 def route_initial_message(state: State):
     """Router inicial."""
     last_message = state["messages"][-1]
-    router_llm = llm.with_structured_output(InitialRouter)
+    router_llm = llm_simple.with_structured_output(InitialRouter)
     result = router_llm.invoke([
         {
             "role": "system",
-            "content": """You are an expert at routing user messages for an HR support system.
-            If the message is a simple greeting, thank you, or conversational, route to 'receptionist'.
-            If the message contains a specific question about HR topics (benefits, safety, medical, payroll), route to 'classifier'.""",
+            "content": load_prompt("initial_router"),
         },
         {"role": "user", "content": last_message.content},
     ])
@@ -282,73 +553,149 @@ def receptionist_agent(state: State):
     messages = [
         {
             "role": "system",
-            "content": f"""Você é a recepcionista virtual do RH da CPQD. 
-            
-            INFORMAÇÕES CONTEXTUAIS:
-            - Horário atual: {current_time} (horário de Brasília)
-            - Cumprimento apropriado: {greeting}
-            
-            INSTRUÇÕES:
-            - SEMPRE comece sua resposta com o cumprimento contextualizado ({greeting})
-            - Seja cordial, profissional e acolhedora
-            - Mencione o horário quando relevante
-            - Ofereça ajuda com questões de:
-              • Benefícios (plano de saúde, vale refeição, vale transporte)
-              • Segurança do Trabalho (EPIs, acidentes, treinamentos)
-              • Ambulatório (consultas, atestados, exames)
-              • Folha de Pagamento (salário, férias, 13º)
-            
-            Mantenha a resposta breve, educada e humanizada.""",
+            "content": load_prompt(
+                "receptionist",
+                greeting=greeting,
+                current_time=current_time,
+            ),
         },
         {"role": "user", "content": last_message.content},
     ]
-    reply = llm.invoke(messages)
+    reply = llm_simple.invoke(messages)
     return {"messages": [{"role": "assistant", "content": reply.content}]}
 
 
 def classify_message(state: State):
     """Classificador de mensagens RH."""
     last_message = state["messages"][-1]
-    classifier_llm = llm.with_structured_output(MessageClassifier)
+    classifier_llm = llm_simple.with_structured_output(MessageClassifier)
     result = classifier_llm.invoke([
         {
             "role": "system",
-            "content": """Classifique a mensagem do usuário em uma das categorias de RH:
-            - 'benefits': plano de saúde, vale refeição, vale transporte, benefícios em geral
-            - 'safety': segurança do trabalho, EPIs, acidentes, SESMT, treinamentos de segurança
-            - 'clinic': ambulatório, atestados médicos, exames periódicos, saúde ocupacional
-            - 'payroll': salário, holerite, férias, 13º salário, rescisão, folha de pagamento
-            """,
+            "content": load_prompt("classifier"),
         },
         {"role": "user", "content": last_message.content},
     ])
     return {"message_type": result.message_type}
 
 
-def retrieve_knowledge(state: State):
-    """Busca conhecimento relevante na base de dados."""
+# Vocabulário por categoria para guiar a expansão da query
+CATEGORY_VOCABULARY: dict[str, str] = {
+    "benefits": (
+        "plano de saúde, dependentes, coparticipação, rede credenciada, "
+        "vale refeição, vale alimentação, vale transporte, auxílio creche, "
+        "previdência privada, reembolso, carência"
+    ),
+    "safety": (
+        "EPI, EPC, NR-6, NR-10, NR-35, CIPA, SESMT, acidente de trabalho, "
+        "CAT, treinamento de segurança, brigada de incêndio, ergonomia, riscos ocupacionais"
+    ),
+    "clinic": (
+        "atestado médico, exame admissional, exame periódico, exame demissional, "
+        "ASO, médico do trabalho, ambulatório, afastamento, INSS, perícia médica"
+    ),
+    "payroll": (
+        "salário base, holerite, contracheque, 13º salário, "
+        "rescisão contratual, FGTS, INSS, IRRF, "
+        "horas extras, banco de horas, adiantamento"
+    ),
+    "vacation": (
+        "férias, período aquisitivo, período concessivo, abono pecuniário, "
+        "venda de 1/3 de férias, terço constitucional, fracionamento de férias, "
+        "férias coletivas, férias proporcionais, programação de férias, "
+        "aviso prévio de férias, prescrição de férias, art. 129 a 153 CLT"
+    ),
+}
+
+
+def rewrite_query(state: State):
+    """Reescreve a pergunta do usuário em múltiplas variações para melhorar a busca."""
     last_message = state["messages"][-1]
-    query = last_message.content
-    
-    print(f"\n🔍 Buscando conhecimento para: '{query}'")
-    
-    relevant_docs = retriever.invoke(query)
-    
-    if relevant_docs:
+    original_query = last_message.content
+    category = state.get("message_type", "")
+    vocabulary = CATEGORY_VOCABULARY.get(category, "")
+
+    rewriter_llm = llm_medium.with_structured_output(RewrittenQueries)
+
+    system_prompt = load_prompt(
+        "query_rewriter",
+        category=category,
+        vocabulary=vocabulary,
+    )
+
+    try:
+        result = rewriter_llm.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Pergunta original: {original_query}"},
+        ])
+        rewritten = result.queries
+        print(f"\n✏️  Query Rewriting ({category}):")
+        print(f"   Original: {original_query}")
+        for i, q in enumerate(rewritten, 1):
+            print(f"   Variação {i}: {q}")
+    except Exception as e:
+        print(f"⚠️  Falha no query rewriting, usando original: {e}")
+        rewritten = []
+
+    return {"rewritten_queries": rewritten}
+
+
+def retrieve_knowledge(state: State):
+    """Busca conhecimento relevante na base de dados usando multi-query com scores."""
+    last_message = state["messages"][-1]
+    original_query = last_message.content
+    rewritten = state.get("rewritten_queries") or []
+
+    # Lista final de queries: original + reescritas (deduplicadas, preservando ordem)
+    all_queries: list[str] = []
+    seen_q: set[str] = set()
+    for q in [original_query, *rewritten]:
+        norm = q.strip().lower()
+        if norm and norm not in seen_q:
+            seen_q.add(norm)
+            all_queries.append(q.strip())
+
+    print(f"\n🔍 Busca multi-query ({len(all_queries)} variações):")
+    for i, q in enumerate(all_queries, 1):
+        print(f"   {i}. {q}")
+
+    # Executa cada query e agrega resultados deduplicando por (source, page_content)
+    aggregated: dict[tuple, tuple[Document, float]] = {}
+    for q in all_queries:
+        try:
+            hits = vectorstore.similarity_search_with_score(q, k=3)
+        except Exception as e:
+            print(f"⚠️  Erro na busca para '{q}': {e}")
+            continue
+
+        for doc, distance in hits:
+            # Chroma retorna distância (menor = melhor). Convertemos em similaridade.
+            similarity = 1.0 - float(distance)
+            key = (doc.metadata.get("source", ""), doc.page_content[:120])
+            # Mantém o melhor score caso o mesmo doc apareça em queries diferentes
+            if key not in aggregated or similarity > aggregated[key][1]:
+                aggregated[key] = (doc, similarity)
+
+    # Ordena por score desc e pega top 4
+    ranked = sorted(aggregated.values(), key=lambda x: x[1], reverse=True)[:4]
+
+    if ranked:
         context_parts = []
-        for i, doc in enumerate(relevant_docs, 1):
-            source = doc.metadata.get('source', 'unknown')
-            category = doc.metadata.get('category', 'N/A')
-            version = doc.metadata.get('version', 'N/A')
+        for i, (doc, score) in enumerate(ranked, 1):
+            source = doc.metadata.get("source", "unknown")
+            category = doc.metadata.get("category", "N/A")
+            version = doc.metadata.get("version", "N/A")
             context_parts.append(
-                f"📄 Documento {i} [{category.upper()}] [Fonte: {source} v{version}]:\n{doc.page_content.strip()}"
+                f"📄 Documento {i} [{category.upper()}] [Fonte: {source} v{version}] "
+                f"[score: {score:.3f}]:\n{doc.page_content.strip()}"
             )
+            print(f"   ✓ {source} (score={score:.3f})")
         context = "\n\n".join(context_parts)
-        print(f"✅ Encontrados {len(relevant_docs)} documentos relevantes")
+        print(f"✅ {len(ranked)} documentos selecionados após deduplicação")
     else:
         context = "Nenhum documento relevante encontrado na base de conhecimento."
         print("⚠️ Nenhum documento encontrado")
-    
+
     return {"retrieved_context": context}
 
 
@@ -360,24 +707,13 @@ def benefits_agent(state: State):
     """Agente especializado em Benefícios."""
     last_message = state["messages"][-1]
     context = state.get("retrieved_context", "")
-    
-    system_prompt = f"""Você é o especialista em BENEFÍCIOS do RH.
+    current_time = state.get("current_time", "")
 
-⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
-
-📚 BASE DE CONHECIMENTO:
-{context}
-
-🎯 SUA MISSÃO:
-- Use as informações da base de conhecimento para responder
-- Seja específico com valores, prazos e procedimentos
-- Se a base tiver informações relevantes, cite-as
-- Sempre inclua contatos e ramais quando disponíveis
-- Considere o horário atual ao mencionar prazos
-- Responda em Português (BR)
-- Seja profissional e prestativo
-
-Áreas de especialidade: plano de saúde, vale refeição, vale alimentação, vale transporte."""
+    system_prompt = load_prompt(
+        "benefits_agent",
+        current_time=current_time,
+        context=context,
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -392,25 +728,13 @@ def safety_agent(state: State):
     """Agente especializado em Segurança do Trabalho."""
     last_message = state["messages"][-1]
     context = state.get("retrieved_context", "")
-    
-    system_prompt = f"""Você é o especialista em SEGURANÇA DO TRABALHO do RH.
+    current_time = state.get("current_time", "")
 
-⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
-
-📚 BASE DE CONHECIMENTO:
-{context}
-
-🎯 SUA MISSÃO:
-- Use as informações da base de conhecimento para responder
-- Priorize a segurança do colaborador sempre
-- Seja claro sobre procedimentos de emergência
-- Cite normas regulamentadoras (NRs) quando relevante
-- Sempre inclua contatos do SESMT
-- Considere o horário atual ao mencionar prazos
-- Responda em Português (BR)
-- Seja firme mas empático
-
-Áreas de especialidade: EPIs, acidentes de trabalho, treinamentos de segurança, SESMT."""
+    system_prompt = load_prompt(
+        "safety_agent",
+        current_time=current_time,
+        context=context,
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -425,25 +749,13 @@ def clinic_agent(state: State):
     """Agente especializado em Ambulatório."""
     last_message = state["messages"][-1]
     context = state.get("retrieved_context", "")
-    
-    system_prompt = f"""Você é o especialista em AMBULATÓRIO E SAÚDE OCUPACIONAL do RH.
+    current_time = state.get("current_time", "")
 
-⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
-
-📚 BASE DE CONHECIMENTO:
-{context}
-
-🎯 SUA MISSÃO:
-- Use as informações da base de conhecimento para responder
-- Seja claro sobre horários de atendimento e procedimentos
-- Explique prazos para entrega de atestados
-- Oriente sobre exames ocupacionais
-- Sempre inclua contatos do ambulatório
-- Considere o horário atual ao mencionar prazos e horários de atendimento
-- Responda em Português (BR)
-- Seja empático e acolhedor
-
-Áreas de especialidade: ambulatório, atestados médicos, exames periódicos, saúde ocupacional."""
+    system_prompt = load_prompt(
+        "clinic_agent",
+        current_time=current_time,
+        context=context,
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -458,25 +770,34 @@ def payroll_agent(state: State):
     """Agente especializado em Folha de Pagamento."""
     last_message = state["messages"][-1]
     context = state.get("retrieved_context", "")
-    
-    system_prompt = f"""Você é o especialista em FOLHA DE PAGAMENTO do RH.
+    current_time = state.get("current_time", "")
 
-⏰ HORÁRIO ATUAL: {state.get('current_time', '')} (horário de Brasília)
+    system_prompt = load_prompt(
+        "payroll_agent",
+        current_time=current_time,
+        context=context,
+    )
 
-📚 BASE DE CONHECIMENTO:
-{context}
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": last_message.content},
+    ]
 
-🎯 SUA MISSÃO:
-- Use as informações da base de conhecimento para responder
-- Seja preciso com datas, valores e cálculos
-- Explique descontos e proventos claramente
-- Oriente sobre procedimentos no Portal RH
-- Cite legislação trabalhista quando relevante
-- Considere o horário atual ao mencionar prazos de pagamento
-- Responda em Português (BR)
-- Seja claro e objetivo
+    reply = llm.invoke(messages)
+    return {"messages": [{"role": "assistant", "content": reply.content}]}
 
-Áreas de especialidade: salário, holerite, férias, 13º salário, rescisão, adiantamento."""
+
+def vacation_agent(state: State):
+    """Agente especializado em Férias."""
+    last_message = state["messages"][-1]
+    context = state.get("retrieved_context", "")
+    current_time = state.get("current_time", "")
+
+    system_prompt = load_prompt(
+        "vacation_agent",
+        current_time=current_time,
+        context=context,
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -497,11 +818,13 @@ graph_builder = StateGraph(State)
 graph_builder.add_node("initial_router", route_initial_message)
 graph_builder.add_node("receptionist", receptionist_agent)
 graph_builder.add_node("classifier", classify_message)
+graph_builder.add_node("rewrite_query", rewrite_query)
 graph_builder.add_node("retrieve_knowledge", retrieve_knowledge)
 graph_builder.add_node("benefits", benefits_agent)
 graph_builder.add_node("safety", safety_agent)
 graph_builder.add_node("clinic", clinic_agent)
 graph_builder.add_node("payroll", payroll_agent)
+graph_builder.add_node("vacation", vacation_agent)
 
 # Definir o fluxo
 graph_builder.add_edge(START, "initial_router")
@@ -513,17 +836,21 @@ graph_builder.add_conditional_edges(
     {"receptionist": "receptionist", "classifier": "classifier"},
 )
 
-# Classifier vai para retrieve_knowledge
+# Classifier vai para rewrite_query (otimiza a busca antes de buscar)
 graph_builder.add_conditional_edges(
     "classifier",
     lambda state: state.get("message_type"),
     {
-        "benefits": "retrieve_knowledge",
-        "safety": "retrieve_knowledge",
-        "clinic": "retrieve_knowledge",
-        "payroll": "retrieve_knowledge",
+        "benefits": "rewrite_query",
+        "safety": "rewrite_query",
+        "clinic": "rewrite_query",
+        "payroll": "rewrite_query",
+        "vacation": "rewrite_query",
     },
 )
+
+# rewrite_query vai para retrieve_knowledge
+graph_builder.add_edge("rewrite_query", "retrieve_knowledge")
 
 # Retrieve_knowledge vai para o agente apropriado
 graph_builder.add_conditional_edges(
@@ -534,6 +861,7 @@ graph_builder.add_conditional_edges(
         "safety": "safety",
         "clinic": "clinic",
         "payroll": "payroll",
+        "vacation": "vacation",
     },
 )
 
@@ -543,6 +871,7 @@ graph_builder.add_edge("benefits", END)
 graph_builder.add_edge("safety", END)
 graph_builder.add_edge("clinic", END)
 graph_builder.add_edge("payroll", END)
+graph_builder.add_edge("vacation", END)
 
 # Compilar o grafo
 app = graph_builder.compile()

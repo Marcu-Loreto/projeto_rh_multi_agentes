@@ -9,6 +9,8 @@ Write-Host "  2. LangGraph Studio (Visualização do Grafo)" -ForegroundColor Wh
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 
+
+## Como rodar o projeto inteiro : bash run_completo.sh
 # Ativar ambiente virtual
 & .\.venv\Scripts\Activate.ps1
 

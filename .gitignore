@@ -4,8 +4,34 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 
 # Virtual environments
-.venv
+.venv/
+venv/
+
+# Environment variables (NEVER commit secrets)
 .env
+.env.local
+.env.*.local
+
+# LangGraph runtime data
+.langgraph_api/
+
+# Logs and PIDs
+logs/
+*.log
+*.pid
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Scripts experimentais (não versionar)
+_*.py
+old/
+
+# Streamlit cache
+.streamlit/
