@@ -13,6 +13,7 @@ from agent_rh_4_agentes import (
     get_formatted_time,
     get_run_config,
 )
+from guardrails import scan_input, scan_output
 import time
 
 # ============================================================================
@@ -152,6 +153,10 @@ if "messages" not in st.session_state:
 if "agent_history" not in st.session_state:
     st.session_state.agent_history = []
 
+if "rate_limit_count" not in st.session_state:
+    st.session_state.rate_limit_count = 0
+    st.session_state.rate_limit_reset = None
+
 # ============================================================================
 # HEADER
 # ============================================================================
@@ -242,60 +247,100 @@ with chat_container:
 # ============================================================================
 
 if prompt := st.chat_input("Digite sua pergunta sobre RH..."):
-    # Adicionar mensagem do usuário
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    # Exibir mensagem do usuário
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    
-    # Processar com o agente
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
+    # 🛡️ RATE LIMITING — máximo 30 mensagens por minuto
+    import time as _time
+    from datetime import datetime as _dt
+
+    now = _dt.now()
+    if st.session_state.rate_limit_reset is None or (now - st.session_state.rate_limit_reset).seconds >= 60:
+        st.session_state.rate_limit_count = 0
+        st.session_state.rate_limit_reset = now
+
+    st.session_state.rate_limit_count += 1
+
+    if st.session_state.rate_limit_count > 30:
+        st.warning("⚠️ Limite de mensagens atingido. Aguarde um momento antes de enviar novas perguntas.")
+    else:
+        # Adicionar mensagem do usuário
+        st.session_state.messages.append({"role": "user", "content": prompt})
         
-        # Mostrar indicador de carregamento
-        with st.spinner("🤔 Processando sua pergunta..."):
-            try:
-                # Invocar o grafo LangGraph (com telemetria Langfuse se configurada)
-                result = app.invoke(
-                    {"messages": [{"role": "user", "content": prompt}]},
-                    config=get_run_config(),
-                )
-                
-                # Extrair resposta
-                assistant_message = result['messages'][-1].content
-                
-                # Detectar qual agente respondeu (baseado no tipo de mensagem)
-                message_type = result.get('message_type', 'unknown')
-                st.session_state.agent_history.append(message_type)
-                
-                # Adicionar badge do agente
-                agent_badges = {
-                    "benefits": '<span class="agent-badge badge-benefits">💼 Benefícios</span>',
-                    "safety": '<span class="agent-badge badge-safety">🦺 Segurança</span>',
-                    "clinic": '<span class="agent-badge badge-clinic">🏥 Ambulatório</span>',
-                    "payroll": '<span class="agent-badge badge-payroll">💰 Folha de Pagamento</span>',
-                    "vacation": '<span class="agent-badge badge-vacation">🏖️ Férias</span>',
-                }
-                
-                badge = agent_badges.get(message_type, "")
-                
-                # Exibir resposta com animação de digitação
-                full_response = ""
-                for chunk in assistant_message.split():
-                    full_response += chunk + " "
-                    time.sleep(0.02)
-                    message_placeholder.markdown(badge + "\n\n" + full_response + "▌", unsafe_allow_html=True)
-                
-                message_placeholder.markdown(badge + "\n\n" + assistant_message, unsafe_allow_html=True)
-                
-            except Exception as e:
-                error_message = f"❌ Erro ao processar: {str(e)}"
-                message_placeholder.error(error_message)
-                assistant_message = error_message
-        
-        # Adicionar resposta ao histórico
-        st.session_state.messages.append({"role": "assistant", "content": assistant_message})
+        # Exibir mensagem do usuário
+        with st.chat_message("user"):
+            st.markdown(prompt)
+    
+        # Processar com o agente
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            
+            # Mostrar indicador de carregamento
+            with st.spinner("🤔 Processando sua pergunta..."):
+                try:
+                    # 🛡️ GUARDRAIL DE INPUT — valida antes de enviar ao agente
+                    input_check = scan_input(prompt)
+
+                    if not input_check.is_safe:
+                        assistant_message = input_check.blocked_message
+                        message_placeholder.warning(assistant_message)
+                    else:
+                        # Usa o prompt sanitizado (PII anonimizado, etc.)
+                        safe_prompt = input_check.sanitized_prompt
+
+                        # Invocar o grafo LangGraph (com telemetria Langfuse se configurada)
+                        result = app.invoke(
+                            {"messages": [{"role": "user", "content": safe_prompt}]},
+                            config=get_run_config(),
+                        )
+                        
+                        # Extrair resposta
+                        raw_response = result['messages'][-1].content
+
+                        # 🛡️ GUARDRAIL DE OUTPUT — valida antes de entregar ao usuário
+                        output_check = scan_output(prompt=safe_prompt, response=raw_response)
+                        assistant_message = output_check.sanitized_response
+                        
+                        # Detectar qual agente respondeu (baseado no tipo de mensagem)
+                        message_type = result.get('message_type', 'unknown')
+                        st.session_state.agent_history.append(message_type)
+                        
+                        # Adicionar badge do agente
+                        agent_badges = {
+                            "benefits": '<span class="agent-badge badge-benefits">💼 Benefícios</span>',
+                            "safety": '<span class="agent-badge badge-safety">🦺 Segurança</span>',
+                            "clinic": '<span class="agent-badge badge-clinic">🏥 Ambulatório</span>',
+                            "payroll": '<span class="agent-badge badge-payroll">💰 Folha de Pagamento</span>',
+                            "vacation": '<span class="agent-badge badge-vacation">🏖️ Férias</span>',
+                        }
+                        
+                        badge = agent_badges.get(message_type, "")
+
+                        # Indicador de guardrail (se output foi sanitizado)
+                        guardrail_indicator = ""
+                        if not output_check.is_safe:
+                            guardrail_indicator = "🛡️ *Resposta verificada pelos guardrails de segurança.*\n\n"
+                        
+                        # Exibir resposta com animação de digitação
+                        full_response = ""
+                        for chunk in assistant_message.split():
+                            full_response += chunk + " "
+                            time.sleep(0.02)
+                            message_placeholder.markdown(
+                                badge + "\n\n" + guardrail_indicator + full_response + "▌",
+                                unsafe_allow_html=True,
+                            )
+                        
+                        message_placeholder.markdown(
+                            badge + "\n\n" + guardrail_indicator + assistant_message,
+                            unsafe_allow_html=True,
+                        )
+                    
+                except Exception as e:
+                    import logging as _logging
+                    _logging.getLogger(__name__).error("Erro ao processar mensagem", exc_info=True)
+                    assistant_message = "❌ Desculpe, ocorreu um erro interno. Tente novamente em instantes."
+                    message_placeholder.error(assistant_message)
+            
+            # Adicionar resposta ao histórico
+            st.session_state.messages.append({"role": "assistant", "content": assistant_message})
 
 # ============================================================================
 # FOOTER

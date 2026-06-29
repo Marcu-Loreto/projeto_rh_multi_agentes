@@ -13,6 +13,7 @@ dependencies = [
     "langfuse",
     "langgraph",
     "langgraph-cli[inmem]",
+    "llm-guard>=0.3.16",
     "pydantic",
     "python-dotenv",
     "pytz",

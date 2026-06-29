@@ -2,7 +2,7 @@
 
 ## Resumo Executivo
 
-Sistema multiagente de atendimento de Recursos Humanos baseado em RAG (Retrieval-Augmented Generation) e LangGraph. O sistema recebe perguntas de colaboradores do CPQD sobre temas de RH, classifica a intenção, recupera conhecimento relevante de uma base vetorial e direciona para um agente especializado que formula a resposta final. A interface é web (Streamlit) e a observabilidade é provida pelo Langfuse.
+Sistema multiagente de atendimento de Recursos Humanos baseado em RAG (Retrieval-Augmented Generation) e LangGraph. O sistema recebe perguntas de colaboradores do CPQD sobre temas de RH, classifica a intenção, recupera conhecimento relevante de uma base vetorial e direciona para um agente especializado que formula a resposta final. A interface é web (Streamlit) e a observabilidade é provida pelo Langfuse. Guardrails de input e output (LLM-Guard) protegem contra prompt injection, toxicidade e vazamento de dados pessoais.
 
 ---
 
@@ -21,6 +21,15 @@ graph LR
         STREAMLIT["Streamlit UI<br/>(app_streamlit.py)"]
         USER -->|pergunta| STREAMLIT
         STREAMLIT -->|resposta| USER
+    end
+
+    %% ═══════════════════════════════════════════════════════════════
+    %% GUARDRAILS
+    %% ═══════════════════════════════════════════════════════════════
+    subgraph GUARDRAILS["🛡️ Guardrails (LLM-Guard)"]
+        direction TB
+        INPUT_GUARD["Input Guardrail<br/>(PromptInjection, Anonymize,<br/>Toxicity, BanTopics, TokenLimit)"]
+        OUTPUT_GUARD["Output Guardrail<br/>(Sensitive, Toxicity,<br/>Relevance, BanTopics, NoRefusal)"]
     end
 
     %% ═══════════════════════════════════════════════════════════════
@@ -83,7 +92,7 @@ graph LR
     %% ═══════════════════════════════════════════════════════════════
     subgraph LLMPOOL["🧠 Pool de LLMs"]
         direction TB
-        LLM_SIMPLE["Simple<br/>(MiniMax M2.5 / GPT-4o-mini)"]
+        LLM_SIMPLE["Simple<br/>(NVIDIA Nemotron 40B via OpenRouter<br/>FREE / fallback: GPT-4o-mini)"]
         LLM_MEDIUM["Medium<br/>(GPT-4o-mini)"]
         LLM_COMPLEX["Complex<br/>(GPT-4o-mini / GPT-4o)"]
     end
@@ -91,13 +100,17 @@ graph LR
     %% ═══════════════════════════════════════════════════════════════
     %% CONEXÕES PRINCIPAIS
     %% ═══════════════════════════════════════════════════════════════
-    STREAMLIT -->|invoke graph| ROUTER
+    STREAMLIT -->|invoke graph| INPUT_GUARD
+    INPUT_GUARD -->|safe| ROUTER
+    INPUT_GUARD -->|blocked| STREAMLIT
     ROUTER -->|small talk| RECEPTIONIST
     ROUTER -->|HR question| CLASSIFIER
     CLASSIFIER -->|categoria| REWRITER
     REWRITER -->|queries expandidas| RETRIEVER
     RETRIEVER -->|context + category| AGENTS
-    AGENTS -->|resposta final| STREAMLIT
+    AGENTS -->|resposta| OUTPUT_GUARD
+    RECEPTIONIST -->|resposta| OUTPUT_GUARD
+    OUTPUT_GUARD -->|sanitizada| STREAMLIT
 
     %% Conexões de LLM
     ROUTER -.->|usa| LLM_SIMPLE
@@ -120,13 +133,15 @@ graph LR
 | Componente                 | Papel                                                      | Entrada                                      | Saída                                                       | Tipo                     |
 | -------------------------- | ---------------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------- | ------------------------ |
 | **Streamlit UI**           | Interface web do colaborador                               | Pergunta em texto livre                      | Resposta formatada com badge do agente                      | Runtime / Apresentação   |
+| **Input Guardrail**        | Valida input: prompt injection, toxicidade, PII, flooding  | Mensagem do usuário                          | `blocked` (resposta de erro) ou `safe` (prossegue)          | Runtime / Segurança      |
 | **Initial Router**         | Decide se a mensagem é conversa casual ou pergunta de RH   | Mensagem do usuário                          | `receptionist` ou `classifier`                              | Runtime / Orquestração   |
-| **Recepcionista**          | Responde saudações e small talk com contexto de horário    | Mensagem + horário São Paulo                 | Resposta cordial                                            | Runtime / Agente         |
+| **Recepcionista**          | Responde saudações e small talk com contexto de horário    | Mensagem + horário São Paulo                 | Resposta cordial (sem dados pessoais — LGPD)                | Runtime / Agente         |
 | **Classificador**          | Categoriza a pergunta em 5 domínios de RH                  | Mensagem do usuário                          | Enum: `benefits`, `safety`, `clinic`, `payroll`, `vacation` | Runtime / Orquestração   |
 | **Query Rewriter**         | Expande a pergunta em 3 variações semânticas por categoria | Pergunta original + vocabulário da categoria | Lista de 3 queries reformuladas                             | Runtime / RAG            |
 | **Retrieve Knowledge**     | Busca multi-query com deduplicação e ranking por score     | Queries originais + reescritas               | Top 4 documentos com score                                  | Runtime / RAG            |
 | **ChromaDB**               | Vector store em memória com embeddings dos documentos      | Queries vetorizadas                          | Documentos similares + distância                            | Persistente / Dados      |
 | **Agentes Especializados** | Geram a resposta final usando contexto RAG + system prompt | Pergunta + contexto recuperado + horário     | Resposta especializada em pt-BR                             | Runtime / Agente         |
+| **Output Guardrail**       | Valida output: dados sensíveis, toxicidade, relevância     | Resposta do agente + prompt original         | Resposta sanitizada ou substituída                          | Runtime / Segurança      |
 | **Document Loader**        | Carrega .txt e .csv da pasta RAG/ no boot                  | Arquivos do filesystem                       | Objetos Document com metadata                               | Inicialização / Ingestão |
 | **OpenAI Embeddings**      | Converte texto em vetores semânticos                       | Texto dos documentos / queries               | Vetores (text-embedding-3-small)                            | Runtime / IA             |
 | **Pool de LLMs**           | Gerencia 3 níveis de complexidade com fallback             | Configuração .env                            | Instâncias ChatOpenAI                                       | Runtime / Infraestrutura |
@@ -139,22 +154,33 @@ graph LR
 ```
 1. Colaborador digita pergunta → Streamlit UI
 2. Streamlit invoca o grafo LangGraph (app.invoke)
-3. Initial Router (LLM Simple) decide:
-   • Small talk → Recepcionista → Resposta → FIM
+3. Input Guardrail (LLM-Guard) valida a mensagem:
+   • Prompt Injection → bloqueado
+   • Toxicidade → bloqueado
+   • PII detectado → anonimizado (CPF, email, telefone)
+   • Token limit excedido → bloqueado
+   • Tópico banido → bloqueado
+   • Seguro → prossegue
+4. Initial Router (LLM Simple — Nemotron 40B via OpenRouter) decide:
+   • Small talk → Recepcionista → Output Guardrail → FIM
    • Pergunta RH → Classificador
-4. Classificador (LLM Simple) categoriza: benefits | safety | clinic | payroll | vacation
-5. Query Rewriter (LLM Medium) gera 3 variações semânticas da pergunta
-6. Retrieve Knowledge executa busca multi-query no ChromaDB:
+5. Classificador (LLM Simple) categoriza: benefits | safety | clinic | payroll | vacation
+6. Query Rewriter (LLM Medium — GPT-4o-mini) gera 3 variações semânticas da pergunta
+7. Retrieve Knowledge executa busca multi-query no ChromaDB:
    • Roda cada query (original + 3 variações)
    • Agrega resultados, deduplica, ordena por similaridade
    • Retorna top 4 documentos com scores
-7. Agente Especializado (LLM Complex) recebe:
+8. Agente Especializado (LLM Complex) recebe:
    • System prompt carregado de /prompts/{agente}.md
    • Contexto RAG recuperado
    • Horário atual (São Paulo)
    • Pergunta original do colaborador
-8. Agente gera resposta final em pt-BR
-9. Streamlit exibe resposta com badge visual do agente que respondeu
+9. Agente gera resposta final em pt-BR
+10. Output Guardrail (LLM-Guard) valida a resposta:
+    • Dados sensíveis → sanitizados
+    • Toxicidade → substituída
+    • Relevância → verificada
+11. Streamlit exibe resposta com badge visual do agente que respondeu
 ```
 
 ---
@@ -185,8 +211,11 @@ graph LR
 ### Fallback de LLM
 
 ```
-1. Pool de LLMs tenta provedor configurado (ex: MiniMax para simple)
-2. Se API key ausente → fallback para modelo OpenAI equivalente
+1. Pool de LLMs tenta provedor configurado:
+   • Simple: OpenRouter (nvidia/nemotron-40b-instruct:free)
+   • Medium: OpenAI (gpt-4o-mini)
+   • Complex: OpenAI (gpt-4o-mini / gpt-4o)
+2. Se API key ausente → fallback para modelo OpenAI equivalente (gpt-4o-mini)
 3. Log de warning no boot sobre qual modelo está ativo em cada nível
 ```
 
@@ -197,10 +226,14 @@ graph LR
 | Decisão                                  | Justificativa                                                                                                                        |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | **LangGraph como orquestrador**          | Grafo explícito com estado tipado (TypedDict) permite fluxo condicional claro, debugging visual e extensibilidade para novos agentes |
-| **Pool de LLMs por complexidade**        | Otimiza custo: tarefas determinísticas usam modelos baratos/gratuitos; respostas finais usam modelos premium                         |
+| **Pool de LLMs por complexidade**        | Otimiza custo: tarefas determinísticas usam modelos gratuitos (Nemotron via OpenRouter); respostas finais usam modelos premium       |
+| **OpenRouter para tarefas simples**      | Acesso a modelos free (NVIDIA Nemotron 40B) sem custo, com fallback transparente para OpenAI se indisponível                         |
+| **Guardrails LLM-Guard (input+output)**  | Proteção contra prompt injection, toxicidade, flooding e vazamento de dados; fail-closed para scanners críticos                      |
+| **LGPD no prompt do recepcionista**      | O recepcionista (que roda em provider terceiro) nunca solicita/processa/ecoa dados pessoais — elimina risco de transferência de PII  |
 | **Query Rewriting antes do retrieval**   | Expande vocabulário semântico da pergunta, melhorando recall do RAG — especialmente importante para jargão de RH                     |
 | **Multi-query com deduplicação**         | Combinar resultados de múltiplas queries aumenta precisão sem duplicar documentos no contexto                                        |
 | **Prompts em arquivos .md externos**     | Desacopla conteúdo de código: permite editar/versionar prompts sem alterar Python                                                    |
+| **Path traversal protection em prompts** | Validação contra `..`, `/`, `\` e verificação de path dentro de PROMPTS_DIR antes de carregar qualquer arquivo                       |
 | **ChromaDB em memória**                  | Simplifica setup para desenvolvimento; base de conhecimento é pequena (~8 documentos) e cabe em RAM                                  |
 | **Streamlit como frontend**              | Prototipagem rápida com UX conversacional; adequado para MVP interno no CPQD                                                         |
 | **Langfuse opcional**                    | Não bloqueia execução se credenciais ausentes; ativa observabilidade sem impacto em ambientes locais                                 |
@@ -231,24 +264,27 @@ class State(TypedDict):
     rewritten_queries: list[str] | None       # Queries expandidas
     current_time: str | None                  # Horário formatado
     greeting: str | None                      # Cumprimento contextual
+    guardrail_blocked: bool | None            # Input bloqueado pelos guardrails
+    guardrail_scores: dict | None             # Scores dos scanners
 ```
 
 ---
 
 ## Stack Tecnológica
 
-| Camada          | Tecnologia                 | Versão/Modelo          |
-| --------------- | -------------------------- | ---------------------- |
-| Frontend        | Streamlit                  | —                      |
-| Orquestração    | LangGraph                  | —                      |
-| LLM (Simple)    | MiniMax M2.5 / GPT-4o-mini | Fallback automático    |
-| LLM (Medium)    | GPT-4o-mini                | —                      |
-| LLM (Complex)   | GPT-4o-mini / GPT-4o       | Configurável via .env  |
-| Embeddings      | OpenAI                     | text-embedding-3-small |
-| Vector Store    | ChromaDB                   | Em memória             |
-| Observabilidade | Langfuse                   | Cloud ou self-hosted   |
-| Runtime         | Python 3.12+               | —                      |
-| Validação       | Pydantic v2                | Structured Output      |
+| Camada          | Tecnologia                 | Versão/Modelo                          |
+| --------------- | -------------------------- | -------------------------------------- |
+| Frontend        | Streamlit                  | —                                      |
+| Orquestração    | LangGraph                  | —                                      |
+| LLM (Simple)    | NVIDIA Nemotron 40B (free) | via OpenRouter / fallback: GPT-4o-mini |
+| LLM (Medium)    | GPT-4o-mini                | —                                      |
+| LLM (Complex)   | GPT-4o-mini / GPT-4o       | Configurável via .env                  |
+| Embeddings      | OpenAI                     | text-embedding-3-small                 |
+| Vector Store    | ChromaDB                   | Em memória                             |
+| Guardrails      | LLM-Guard                  | Input + Output scanners                |
+| Observabilidade | Langfuse                   | Cloud ou self-hosted                   |
+| Runtime         | Python 3.12+               | —                                      |
+| Validação       | Pydantic v2                | Structured Output                      |
 
 ---
 
@@ -256,15 +292,15 @@ class State(TypedDict):
 
 Itens ausentes ou insuficientes para uma versão production-ready:
 
-1. Guardrails de entrada (detecção de prompt injection, input sanitization, content moderation)
-2. Guardrails de saída (validação de resposta, filtro de alucinações, check de compliance)
-3. Roteamento inteligente de LLMs (cost-aware routing, fallback chain, rate-limit handling, circuit breaker)
+1. ~~Guardrails de entrada~~ ✅ Implementado (LLM-Guard: PromptInjection, Anonymize, Toxicity, BanTopics, TokenLimit)
+2. ~~Guardrails de saída~~ ✅ Implementado (LLM-Guard: Sensitive, Toxicity, Relevance, BanTopics, NoRefusal)
+3. ~~Roteamento inteligente de LLMs~~ ✅ Parcial (Pool de 3 níveis com fallback automático, OpenRouter free para simple)
 4. Autenticação e autorização (JWT, RBAC, SSO corporativo)
 5. Persistência de sessão e histórico de conversas (banco de dados)
 6. API REST/GraphQL desacoplada do frontend (FastAPI)
 7. Vector store persistente e escalável (Chroma Server, Qdrant ou Weaviate)
 8. Cache de respostas e embeddings (Redis)
-9. Rate limiting e throttling por usuário
+9. Rate limiting server-side e throttling por usuário
 10. Ingestão automatizada de documentos (pipeline ETL, versionamento de knowledge base)
 11. Chunking inteligente com overlap e metadata enrichment
 12. Reranker (cross-encoder) após retrieval para melhorar precisão
@@ -286,7 +322,7 @@ Itens ausentes ou insuficientes para uma versão production-ready:
 28. Suporte a múltiplos idiomas (internacionalização)
 29. Documentação de API (OpenAPI/Swagger)
 30. Política de retry e dead-letter queue para chamadas de LLM
-31. Data governance (LGPD, anonimização, retenção, consentimento)
+31. ~~Data governance (LGPD, anonimização, retenção, consentimento)~~ ✅ Parcial (Anonymize no input, restrições LGPD no prompt do recepcionista, PII não trafega para providers free)
 32. Monitoramento de drift de qualidade das respostas ao longo do tempo
 
 ---
@@ -316,11 +352,14 @@ Itens ausentes ou insuficientes para uma versão production-ready:
 - [x] Conexões validadas contra o grafo LangGraph real
 - [x] Nenhuma seta extra ou componente inventado
 - [x] Layout legível da esquerda para direita (fluxo principal)
-- [x] Lógica técnica preservada: Router → Classifier → Rewriter → Retriever → Agent
+- [x] Lógica técnica preservada: Input Guardrail → Router → Classifier → Rewriter → Retriever → Agent → Output Guardrail
 - [x] RAG com ingestion e runtime separados
-- [x] Pool de LLMs com 3 níveis documentados
+- [x] Pool de LLMs com 3 níveis documentados (OpenRouter free + OpenAI)
+- [x] Guardrails de input e output documentados (LLM-Guard)
+- [x] Proteção LGPD no recepcionista (sem PII para provider terceiro)
 - [x] Observabilidade (Langfuse) como camada opcional e não-bloqueante
 - [x] Decisões de design justificadas
+- [x] Path traversal protection documentada
 
 ---
 

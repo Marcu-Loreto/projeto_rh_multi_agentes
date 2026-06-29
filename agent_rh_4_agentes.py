@@ -22,6 +22,7 @@ import csv
 from pathlib import Path
 from datetime import datetime
 import pytz
+from guardrails import scan_input, scan_output
 
 # Load environment variables
 load_dotenv()
@@ -108,14 +109,22 @@ def load_prompt(name: str, **kwargs) -> str:
     Returns:
         String pronta para ser usada como system prompt.
     """
+    # 🛡️ Validação contra path traversal
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"Nome de prompt inválido: '{name}'. Não use separadores de path.")
+
     if name not in _prompt_cache:
         prompt_path = PROMPTS_DIR / f"{name}.md"
-        if not prompt_path.exists():
+        # Garante que o path resolvido está dentro de PROMPTS_DIR
+        resolved = prompt_path.resolve()
+        if not str(resolved).startswith(str(PROMPTS_DIR)):
+            raise ValueError(f"Tentativa de acesso fora do diretório de prompts: '{name}'")
+        if not resolved.exists():
             raise FileNotFoundError(
-                f"Prompt '{name}' não encontrado em {prompt_path}. "
+                f"Prompt '{name}' não encontrado em {resolved}. "
                 f"Verifique PROMPTS_DIR no .env."
             )
-        _prompt_cache[name] = prompt_path.read_text(encoding="utf-8")
+        _prompt_cache[name] = resolved.read_text(encoding="utf-8")
 
     template = _prompt_cache[name]
     return template.format(**kwargs) if kwargs else template
@@ -389,6 +398,8 @@ class State(TypedDict):
     rewritten_queries: list[str] | None
     current_time: str | None
     greeting: str | None
+    guardrail_blocked: bool | None
+    guardrail_scores: dict | None
 
 # ============================================================================
 # PASSO 3: POOL DE LLMS POR COMPLEXIDADE
@@ -407,15 +418,15 @@ def _build_llm(level: str) -> ChatOpenAI:
     cfg = {
         "simple": {
             "model_env": "LLM_SIMPLE_MODEL",
-            "default_model": "minimax-m2.5",
-            "provider": os.getenv("LLM_SIMPLE_PROVIDER", "minimax").lower(),
+            "default_model": "nvidia/nemotron-40b-instruct:free",
+            "provider": os.getenv("LLM_SIMPLE_PROVIDER", "openrouter").lower(),
             "temperature": 0.0,
             "max_tokens": 300,
             "fallback_model": "gpt-4o-mini",
         },
         "medium": {
             "model_env": "LLM_MEDIUM_MODEL",
-            "default_model": "gpt-5.4-nano",
+            "default_model": "gpt-4o-mini",
             "provider": os.getenv("LLM_MEDIUM_PROVIDER", "openai").lower(),
             "temperature": 0.3,
             "max_tokens": 250,
@@ -433,6 +444,28 @@ def _build_llm(level: str) -> ChatOpenAI:
 
     model_name = os.getenv(cfg["model_env"], cfg["default_model"])
     provider = cfg["provider"]
+
+    # OpenRouter — endpoint compatível com OpenAI, acesso a modelos free e pagos.
+    if provider == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        if not api_key:
+            print(
+                f"⚠️  OPENROUTER_API_KEY não configurada — fallback para "
+                f"OpenAI/{cfg['fallback_model']} no nível '{level}'"
+            )
+            return ChatOpenAI(
+                model=cfg["fallback_model"],
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens"],
+            )
+        return ChatOpenAI(
+            model=model_name,
+            temperature=cfg["temperature"],
+            max_tokens=cfg["max_tokens"],
+            api_key=api_key,
+            base_url=base_url,
+        )
 
     # MiniMax expõe API compatível com OpenAI; basta apontar base_url + api_key próprios.
     if provider == "minimax":
@@ -809,12 +842,83 @@ def vacation_agent(state: State):
 
 
 # ============================================================================
-# PASSO 7: CONSTRUIR O GRAFO
+# PASSO 7: GUARDRAILS NODES
+# ============================================================================
+
+
+def input_guardrail_node(state: State):
+    """
+    🛡️ Guardrail de INPUT — primeiro node do grafo.
+    Valida a mensagem do usuário antes de qualquer processamento.
+    Se bloqueado, marca guardrail_blocked=True e injeta mensagem de erro.
+    """
+    last_message = state["messages"][-1]
+    result = scan_input(last_message.content)
+
+    if not result.is_safe:
+        return {
+            "messages": [{"role": "assistant", "content": result.blocked_message}],
+            "guardrail_blocked": True,
+            "guardrail_scores": result.scores,
+        }
+
+    # Input seguro — continua o fluxo normal
+    # Se o prompt foi sanitizado (ex: PII anonimizado), atualiza a mensagem
+    return {
+        "guardrail_blocked": False,
+        "guardrail_scores": result.scores,
+    }
+
+
+def output_guardrail_node(state: State):
+    """
+    🛡️ Guardrail de OUTPUT — último node antes do END.
+    Valida a resposta do agente antes de entregar ao usuário.
+    """
+    # Se foi bloqueado no input, não precisa validar output
+    if state.get("guardrail_blocked"):
+        return {}
+
+    messages = state["messages"]
+    if len(messages) < 2:
+        return {}
+
+    # Pega o prompt original do usuário e a última resposta do agente
+    user_message = None
+    for msg in messages:
+        if hasattr(msg, "type") and msg.type == "human":
+            user_message = msg.content
+        elif hasattr(msg, "content") and getattr(msg, "role", None) == "user":
+            user_message = msg.content
+
+    agent_response = messages[-1].content if messages else ""
+
+    if not user_message or not agent_response:
+        return {}
+
+    result = scan_output(prompt=user_message, response=agent_response)
+
+    if not result.is_safe:
+        # Substitui a última mensagem pela versão sanitizada
+        return {
+            "messages": [{"role": "assistant", "content": result.sanitized_response}],
+            "guardrail_scores": {
+                **(state.get("guardrail_scores") or {}),
+                "output": result.scores,
+            },
+        }
+
+    return {}
+
+
+# ============================================================================
+# PASSO 8: CONSTRUIR O GRAFO
 # ============================================================================
 
 graph_builder = StateGraph(State)
 
 # Adicionar todos os nodes
+graph_builder.add_node("input_guardrail", input_guardrail_node)
 graph_builder.add_node("initial_router", route_initial_message)
 graph_builder.add_node("receptionist", receptionist_agent)
 graph_builder.add_node("classifier", classify_message)
@@ -825,9 +929,17 @@ graph_builder.add_node("safety", safety_agent)
 graph_builder.add_node("clinic", clinic_agent)
 graph_builder.add_node("payroll", payroll_agent)
 graph_builder.add_node("vacation", vacation_agent)
+graph_builder.add_node("output_guardrail", output_guardrail_node)
 
-# Definir o fluxo
-graph_builder.add_edge(START, "initial_router")
+# Fluxo: START → input_guardrail
+graph_builder.add_edge(START, "input_guardrail")
+
+# Input guardrail: se bloqueado → END, senão → initial_router
+graph_builder.add_conditional_edges(
+    "input_guardrail",
+    lambda state: "blocked" if state.get("guardrail_blocked") else "safe",
+    {"blocked": END, "safe": "initial_router"},
+)
 
 # Router inicial
 graph_builder.add_conditional_edges(
@@ -865,13 +977,14 @@ graph_builder.add_conditional_edges(
     },
 )
 
-# Definir onde o grafo termina
-graph_builder.add_edge("receptionist", END)
-graph_builder.add_edge("benefits", END)
-graph_builder.add_edge("safety", END)
-graph_builder.add_edge("clinic", END)
-graph_builder.add_edge("payroll", END)
-graph_builder.add_edge("vacation", END)
+# Agentes → output_guardrail → END
+graph_builder.add_edge("receptionist", "output_guardrail")
+graph_builder.add_edge("benefits", "output_guardrail")
+graph_builder.add_edge("safety", "output_guardrail")
+graph_builder.add_edge("clinic", "output_guardrail")
+graph_builder.add_edge("payroll", "output_guardrail")
+graph_builder.add_edge("vacation", "output_guardrail")
+graph_builder.add_edge("output_guardrail", END)
 
 # Compilar o grafo
 app = graph_builder.compile()
@@ -880,85 +993,49 @@ print("✅ Grafo RH compilado com sucesso!\n")
 
 
 # ============================================================================
-# PASSO 8: TESTAR O SISTEMA
+# PASSO 9: TESTAR O SISTEMA
 # ============================================================================
 
 if __name__ == "__main__":
-    print("=" * 70)
-    print("🧪 TESTANDO SISTEMA DE ATENDIMENTO RH COM 4 AGENTES")
-    print("=" * 70)
-    
-    # Teste 1: Benefícios
-    print("\n📝 TESTE 1: Consulta sobre Benefícios")
-    print("-" * 70)
-    test_query_1 = "Como faço para incluir meu filho no plano de saúde?"
-    print(f"Usuário: {test_query_1}\n")
-    
-    result_1 = app.invoke({
-        "messages": [{"role": "user", "content": test_query_1}]
-    })
-    
-    print(f"\n🤖 Agente de Benefícios: {result_1['messages'][-1].content}\n")
-    
-    # Teste 2: Segurança do Trabalho
-    print("\n" + "=" * 70)
-    print("📝 TESTE 2: Consulta sobre Segurança do Trabalho")
-    print("-" * 70)
-    test_query_2 = "Sofri um acidente no trabalho, o que devo fazer?"
-    print(f"Usuário: {test_query_2}\n")
-    
-    result_2 = app.invoke({
-        "messages": [{"role": "user", "content": test_query_2}]
-    })
-    
-    print(f"\n🤖 Agente de Segurança: {result_2['messages'][-1].content}\n")
-    
-    # Teste 3: Ambulatório
-    print("\n" + "=" * 70)
-    print("📝 TESTE 3: Consulta sobre Ambulatório")
-    print("-" * 70)
-    test_query_3 = "Preciso entregar um atestado médico, qual o prazo?"
-    print(f"Usuário: {test_query_3}\n")
-    
-    result_3 = app.invoke({
-        "messages": [{"role": "user", "content": test_query_3}]
-    })
-    
-    print(f"\n🤖 Agente do Ambulatório: {result_3['messages'][-1].content}\n")
-    
-    # Teste 4: Folha de Pagamento
-    print("\n" + "=" * 70)
-    print("📝 TESTE 4: Consulta sobre Folha de Pagamento")
-    print("-" * 70)
-    test_query_4 = "Quando recebo a primeira parcela do 13º salário?"
-    print(f"Usuário: {test_query_4}\n")
-    
-    result_4 = app.invoke({
-        "messages": [{"role": "user", "content": test_query_4}]
-    })
-    
-    print(f"\n🤖 Agente de Folha de Pagamento: {result_4['messages'][-1].content}\n")
-    
-    print("=" * 70)
-    print("✅ Todos os testes concluídos!")
-    print("=" * 70)
-# Adicione isso no final do agent_rh_4_agentes.py ou crie um novo arquivo
+    import sys
 
-if __name__ == "__main__":
-    print("💬 Modo Interativo - Digite 'sair' para encerrar\n")
-    
-    while True:
-        pergunta = input("\nVocê: ").strip()
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        print("=" * 70)
+        print("🧪 TESTANDO SISTEMA DE ATENDIMENTO RH COM 5 AGENTES")
+        print("=" * 70)
         
-        if pergunta.lower() in ['sair', 'exit', 'quit']:
-            print("👋 Até logo!")
-            break
+        test_queries = [
+            ("Benefícios", "Como faço para incluir meu filho no plano de saúde?"),
+            ("Segurança", "Sofri um acidente no trabalho, o que devo fazer?"),
+            ("Ambulatório", "Preciso entregar um atestado médico, qual o prazo?"),
+            ("Folha de Pagamento", "Quando recebo a primeira parcela do 13º salário?"),
+        ]
+
+        for label, query in test_queries:
+            print(f"\n📝 TESTE: {label}")
+            print("-" * 70)
+            print(f"Usuário: {query}\n")
+            result = app.invoke({"messages": [{"role": "user", "content": query}]})
+            print(f"🤖 Resposta: {result['messages'][-1].content}\n")
+
+        print("=" * 70)
+        print("✅ Todos os testes concluídos!")
+        print("=" * 70)
+    else:
+        print("💬 Modo Interativo - Digite 'sair' para encerrar\n")
         
-        if not pergunta:
-            continue
-        
-        result = app.invoke({
-            "messages": [{"role": "user", "content": pergunta}]
-        })
-        
-        print(f"\n🤖 Assistente: {result['messages'][-1].content}")
+        while True:
+            pergunta = input("\nVocê: ").strip()
+            
+            if pergunta.lower() in ['sair', 'exit', 'quit']:
+                print("👋 Até logo!")
+                break
+            
+            if not pergunta:
+                continue
+            
+            result = app.invoke({
+                "messages": [{"role": "user", "content": pergunta}]
+            })
+            
+            print(f"\n🤖 Assistente: {result['messages'][-1].content}")

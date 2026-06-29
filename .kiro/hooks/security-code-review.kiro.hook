@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Revisão de Segurança",
+  "description": "Revisa automaticamente cada arquivo Python editado, verificando vulnerabilidades de segurança como: exposição de secrets, falta de guardrails em inputs/outputs, prompt injection, dados sensíveis hardcoded, imports inseguros, e conformidade com LGPD.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Revise o arquivo editado sob a perspectiva de SEGURANÇA. Verifique:\n\n1. **Secrets/Credenciais**: Há API keys, tokens, senhas hardcoded? Devem vir de variáveis de ambiente (.env).\n2. **Input Validation**: Inputs do usuário estão sendo validados/sanitizados antes de processamento? Guardrails (scan_input) estão sendo chamados?\n3. **Output Control**: Respostas do agente passam por guardrails de output (scan_output) antes de chegar ao usuário?\n4. **Prompt Injection**: O código é vulnerável a prompt injection? System prompts estão protegidos?\n5. **PII/LGPD**: Dados pessoais (CPF, email, telefone) estão sendo anonimizados ou protegidos adequadamente?\n6. **Dependências**: Imports suspeitos ou pacotes não confiáveis?\n7. **Error Handling**: Exceções estão expondo informações internas ao usuário?\n8. **Logging**: Logs estão vazando dados sensíveis?\n\nSe encontrar problemas, liste-os com severidade (🔴 crítico, 🟡 médio, 🟢 baixo) e sugira a correção. Se estiver tudo seguro, confirme brevemente."
+  }
+}

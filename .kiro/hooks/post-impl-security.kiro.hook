@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Security Review Pós-Implementação",
+  "description": "Após cada tarefa completada pelo agente, aciona o security-reviewer para auditar as mudanças e reportar vulnerabilidades.",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Use o sub-agent security-reviewer para fazer uma revisão completa de segurança dos arquivos Python modificados nesta sessão. Identifique vulnerabilidades, falhas de LGPD, e problemas de segurança específicos de aplicações com LLM/agentes de IA. Reporte os achados com severidade (🔴🟡🟢) e Security Score."
+  }
+}
